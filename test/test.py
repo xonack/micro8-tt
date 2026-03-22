@@ -13,25 +13,25 @@ async def test_fibonacci(dut):
     # Fibonacci program ROM
     rom = [0xE0] * 256  # NOP fill
     program = [
-        0x40,  # LDI 0
-        0x30,  # STR R0
-        0x41,  # LDI 1
-        0x31,  # STR R1
-        0x4D,  # LDI 13
-        0x32,  # STR R2
-        0x29,  # MOV R1
-        0xF1,  # OUT
-        0x00,  # ADD R0
-        0x33,  # STR R3
-        0x29,  # MOV R1
-        0x30,  # STR R0
-        0x2B,  # MOV R3
-        0x31,  # STR R1
-        0x2A,  # MOV R2
-        0xE6,  # DEC
-        0x32,  # STR R2
-        0xB4,  # BNE -12
-        0xE1,  # HLT
+        0x40,  # 0:  LDI 0
+        0x30,  # 1:  STR R0
+        0x41,  # 2:  LDI 1
+        0x31,  # 3:  STR R1
+        0x4D,  # 4:  LDI 13
+        0x32,  # 5:  STR R2
+        0x29,  # 6:  MOV R1
+        0xF1,  # 7:  OUT
+        0x00,  # 8:  ADD R0
+        0x33,  # 9:  STR R3
+        0x29,  # 10: MOV R1
+        0x30,  # 11: STR R0
+        0x2B,  # 12: MOV R3
+        0x31,  # 13: STR R1
+        0x2A,  # 14: MOV R2
+        0xE6,  # 15: DEC
+        0x32,  # 16: STR R2
+        0xB4,  # 17: BNE -12
+        0xE1,  # 18: HLT
     ]
     for i, b in enumerate(program):
         rom[i] = b
@@ -39,7 +39,7 @@ async def test_fibonacci(dut):
     dut._log.info("Starting Fibonacci test")
 
     # Start clock
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset
@@ -52,45 +52,44 @@ async def test_fibonacci(dut):
 
     expected = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233]
     outputs = []
-    out_pending = False
+
+    # Timing analysis for OUT detection:
+    #
+    # The CPU is 2-cycle: FETCH then EXECUTE.
+    # PC (uo_out) is combinational from the pc register.
+    #
+    # When pc=7 (OUT instruction at address 7):
+    #   Rising edge N:   FETCH phase  - ir <= rom[7] = 0xF1, state <= EXECUTE
+    #                    PC still = 7 after this edge (pc reg unchanged in fetch)
+    #   Rising edge N+1: EXECUTE phase - io_out <= acc, pc <= 8, state <= FETCH
+    #                    After this edge, PC = 8 and io_out has the new value
+    #
+    # Detection: when PC transitions from 7 to 8, OUT just executed.
+    # We sample uio_out right after seeing this transition.
+
+    prev_pc = 0
 
     for cycle in range(2000):
-        # Combinational ROM feedback: feed instruction based on current PC
-        pc = dut.uo_out.value.integer
+        # Combinational ROM feedback
+        pc = dut.uo_out.value.to_unsigned()
         dut.ui_in.value = rom[pc]
 
         await RisingEdge(dut.clk)
 
-        # If OUT executed last cycle, capture GPIO value now
-        if out_pending:
-            val = dut.uio_out.value.integer
+        new_pc = dut.uo_out.value.to_unsigned()
+
+        # Detect OUT execution: PC transitions from 7 to 8
+        if prev_pc == 7 and new_pc == 8:
+            val = dut.uio_out.value.to_unsigned()
             outputs.append(val)
             dut._log.info(f"  OUT[{len(outputs)-1}] = {val}")
-            out_pending = False
 
-        # Detect OUT instruction (0xF1) during execute phase
-        # Access internal signals: state=1 means execute, ir=0xF1 means OUT
-        try:
-            state = dut.user_project.u_core.state.value.integer
-            ir = dut.user_project.u_core.ir.value.integer
-            if state == 1 and ir == 0xF1:
-                out_pending = True
-        except Exception:
-            pass
+        prev_pc = new_pc
 
-        # Check for halt
-        try:
-            if dut.user_project.u_core.halted.value.integer == 1:
-                dut._log.info(f"CPU halted after {cycle} cycles")
-                break
-        except Exception:
-            pass
-
-    # Capture final OUT if pending
-    if out_pending:
-        val = dut.uio_out.value.integer
-        outputs.append(val)
-        dut._log.info(f"  OUT[{len(outputs)-1}] = {val}")
+        # Stop once we have all expected outputs
+        if len(outputs) == len(expected):
+            dut._log.info(f"All outputs collected at cycle {cycle}")
+            break
 
     dut._log.info(f"Collected {len(outputs)} outputs: {outputs}")
     assert len(outputs) == 13, f"Expected 13 Fibonacci outputs, got {len(outputs)}: {outputs}"
@@ -106,7 +105,7 @@ async def test_reset(dut):
 
     dut._log.info("Starting reset test")
 
-    clock = Clock(dut.clk, 10, units="ns")
+    clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Hold in reset
