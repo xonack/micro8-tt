@@ -52,24 +52,9 @@ async def test_fibonacci(dut):
 
     expected = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233]
     outputs = []
-
-    # Timing analysis for OUT detection:
-    #
-    # The CPU is 2-cycle: FETCH then EXECUTE.
-    # PC (uo_out) is combinational from the pc register.
-    #
-    # When pc=7 (OUT instruction at address 7):
-    #   Rising edge N:   FETCH phase  - ir <= rom[7] = 0xF1, state <= EXECUTE
-    #                    PC still = 7 after this edge (pc reg unchanged in fetch)
-    #   Rising edge N+1: EXECUTE phase - io_out <= acc, pc <= 8, state <= FETCH
-    #                    After this edge, PC = 8 and io_out has the new value
-    #
-    # Detection: when PC transitions from 7 to 8, OUT just executed.
-    # We sample uio_out right after seeing this transition.
-
     prev_pc = 0
 
-    for cycle in range(2000):
+    for cycle in range(600):
         # Combinational ROM feedback
         pc = dut.uo_out.value.to_unsigned()
         dut.ui_in.value = rom[pc]
@@ -77,12 +62,17 @@ async def test_fibonacci(dut):
         await RisingEdge(dut.clk)
 
         new_pc = dut.uo_out.value.to_unsigned()
+        gpio = dut.uio_out.value.to_unsigned()
+
+        # Debug: log every cycle for first 60 cycles
+        if cycle < 60:
+            dut._log.info(f"  cycle={cycle} prev_pc={prev_pc} pc_before={pc} pc_after={new_pc} gpio={gpio}")
 
         # Detect OUT execution: PC transitions from 7 to 8
         if prev_pc == 7 and new_pc == 8:
             val = dut.uio_out.value.to_unsigned()
             outputs.append(val)
-            dut._log.info(f"  OUT[{len(outputs)-1}] = {val}")
+            dut._log.info(f"  >>> OUT[{len(outputs)-1}] = {val} at cycle {cycle}")
 
         prev_pc = new_pc
 
