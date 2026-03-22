@@ -3,7 +3,19 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge, Timer
+
+
+async def rom_driver(dut, rom):
+    """Continuously drive ui_in from ROM based on uo_out (PC).
+
+    Updates on both rising and falling edges to ensure the ROM data
+    is always available when the CPU needs it for fetch.
+    """
+    while True:
+        await FallingEdge(dut.clk)
+        pc = dut.uo_out.value.to_unsigned()
+        dut.ui_in.value = rom[pc]
 
 
 @cocotb.test()
@@ -42,6 +54,9 @@ async def test_fibonacci(dut):
     clock = Clock(dut.clk, 10, unit="ns")
     cocotb.start_soon(clock.start())
 
+    # Start ROM driver coroutine (mimics: always @(*) ui_in = rom[uo_out])
+    cocotb.start_soon(rom_driver(dut, rom))
+
     # Reset
     dut.ena.value = 1
     dut.rst_n.value = 0
@@ -52,27 +67,25 @@ async def test_fibonacci(dut):
 
     expected = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233]
     outputs = []
+
+    # OUT detection: the Verilog TB uses a one-cycle delayed capture.
+    # When the CPU executes OUT (ext_code 0x11), io_out updates via NBA.
+    # We detect OUT by watching PC transition from 7 to 8 (execute completion).
+    # The GPIO value is valid immediately after the execute rising edge.
     prev_pc = 0
 
     for cycle in range(600):
-        # Combinational ROM feedback
-        pc = dut.uo_out.value.to_unsigned()
-        dut.ui_in.value = rom[pc]
-
         await RisingEdge(dut.clk)
 
         new_pc = dut.uo_out.value.to_unsigned()
-        gpio = dut.uio_out.value.to_unsigned()
-
-        # Debug: log every cycle for first 60 cycles
-        if cycle < 60:
-            dut._log.info(f"  cycle={cycle} prev_pc={prev_pc} pc_before={pc} pc_after={new_pc} gpio={gpio}")
 
         # Detect OUT execution: PC transitions from 7 to 8
         if prev_pc == 7 and new_pc == 8:
+            # Wait a tiny bit to ensure NBA propagation
+            await Timer(1, unit="ns")
             val = dut.uio_out.value.to_unsigned()
             outputs.append(val)
-            dut._log.info(f"  >>> OUT[{len(outputs)-1}] = {val} at cycle {cycle}")
+            dut._log.info(f"  OUT[{len(outputs)-1}] = {val}")
 
         prev_pc = new_pc
 
